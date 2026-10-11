@@ -1,182 +1,36 @@
-# How do I submit patches to Android Common Kernels
+# Xiaomi Mi 11 Ultra（star / SM8350）内核
 
-1. BEST: Make all of your changes to upstream Linux. If appropriate, backport to the stable releases.
-   These patches will be merged automatically in the corresponding common kernels. If the patch is already
-   in upstream Linux, post a backport of the patch that conforms to the patch requirements below.
+面向 Xiaomi Mi 11 Ultra（设备代号 `star`，Qualcomm SM8350）的非官方内核源码。目标环境为 HyperOS 2 / Android 14。
 
-2. LESS GOOD: Develop your patches out-of-tree (from an upstream Linux point-of-view). Unless these are
-   fixing an Android-specific bug, these are very unlikely to be accepted unless they have been
-   coordinated with kernel-team@android.com. If you want to proceed, post a patch that conforms to the
-   patch requirements below.
+## 当前版本与来源
 
-# Common Kernel patch requirements
+- Kernel release：`5.4.274-qgki-g4dfe63e0666f`
+- 源码基线：LineageOS `android_kernel_xiaomi_sm8350` 的 `lineage-21`（Linux 5.4.268）
+- 已移植 Linux stable 5.4.269–5.4.274 修复
+- 配置目标：`vendor/lahaina-qgki_defconfig`，合并本仓库的 `star_QGKI.config` 与 `star_root.config`
+- Root 实现：内置 ReSukiSU `v4.2.0-rc2`（`CONFIG_KSU=y`，manual hooks）
 
-- All patches must conform to the Linux kernel coding standards and pass `script/checkpatch.pl`
-- Patches shall not break gki_defconfig or allmodconfig builds for arm, arm64, x86, x86_64 architectures
-(see  https://source.android.com/setup/build/building-kernels)
-- If the patch is not merged from an upstream branch, the subject must be tagged with the type of patch:
-`UPSTREAM:`, `BACKPORT:`, `FROMGIT:`, `FROMLIST:`, or `ANDROID:`.
-- All patches must have a `Change-Id:` tag (see https://gerrit-review.googlesource.com/Documentation/user-changeid.html)
-- If an Android bug has been assigned, there must be a `Bug:` tag.
-- All patches must have a `Signed-off-by:` tag by the author and the submitter
+本仓库包含修改后的完整内核源码和构建脚本。构建过程与依赖见 [`BUILDING.md`](BUILDING.md)。构建产物及本机临时文件不纳入源码仓库。
 
-Additional requirements are listed below based on patch type
+## 构建与验证状态
 
-## Requirements for backports from mainline Linux: `UPSTREAM:`, `BACKPORT:`
+在 Ubuntu 24.04、Clang/LLVM 14 环境中，`Image.gz dtbs modules` 全量构建成功；`Image.gz` gzip 完整性检查通过，`msm_drm.ko` 的 vermagic 与 kernel release 一致。
 
-- If the patch is a cherry-pick from Linux mainline with no changes at all
-    - tag the patch subject with `UPSTREAM:`.
-    - add upstream commit information with a `(cherry-picked from ...)` line
-    - Example:
-        - if the upstream commit message is
-```
-        important patch from upstream
+**尚未在实体 Xiaomi Mi 11 Ultra 上启动或测试。** 编译成功以及 release 字符串匹配都不能证明它与特定 HyperOS 固件、厂商模块或 KMI 完全兼容。请将其视为实验性源码。
 
-        This is the detailed description of the important patch
+## Root 与其他选项
 
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-```
-        - then Joe Smith would upload the patch for the common kernel as
-```
-        UPSTREAM: important patch from upstream
+- 已集成 ReSukiSU；ReSukiSU 管理器和其他用户态组件不包含在本仓库构建产物说明中。
+- SUSFS 未启用（`CONFIG_KSU_SUSFS` 未设置）。
 
-        This is the detailed description of the important patch
+## 重要安全提示
 
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
+本仓库源码**不是可直接刷入的 `boot.img`**。不要将 `Image.gz` 或 DTBO 直接写入设备分区。启动镜像打包必须匹配设备当前固件的 boot header、vendor ramdisk、DTB/DTBO 组合及 vbmeta 设置；操作前应确认镜像布局、备份原分区并准备可靠的恢复方式。源码树编译出来的 `lahaina.dtb` 与 `star-sm8350-overlay.dtbo` 也需要先和设备当前 HyperOS 2 固件核对。
 
-        Bug: 135791357
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        (cherry-picked from c31e73121f4c1ec41143423ac6ce3ce6dafdcec1)
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
-```
+请自行承担构建、打包和刷写风险；本项目不保证适用于所有固件版本，也不承诺数据安全或设备可用性。
 
-- If the patch requires any changes from the upstream version, tag the patch with `BACKPORT:`
-instead of `UPSTREAM:`.
-    - use the same tags as `UPSTREAM:`
-    - add comments about the changes under the `(cherry-picked from ...)` line
-    - Example:
-```
-        BACKPORT: important patch from upstream
+## 许可证与致谢
 
-        This is the detailed description of the important patch
+源码树由多个上游组件组成，请遵循各文件及组件原有许可证，并保留版权和许可证声明。Linux 内核主许可证见 [`COPYING`](COPYING)；各子目录许可证见 `LICENSES/`、相关目录中的 `LICENSE` 及源码头部声明。ReSukiSU 的许可证文件位于 `KernelSU/LICENSE`。
 
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-
-        Bug: 135791357
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        (cherry-picked from c31e73121f4c1ec41143423ac6ce3ce6dafdcec1)
-        [ Resolved minor conflict in drivers/foo/bar.c ]
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
-```
-
-## Requirements for other backports: `FROMGIT:`, `FROMLIST:`,
-
-- If the patch has been merged into an upstream maintainer tree, but has not yet
-been merged into Linux mainline
-    - tag the patch subject with `FROMGIT:`
-    - add info on where the patch came from as `(cherry picked from commit <sha1> <repo> <branch>)`. This
-must be a stable maintainer branch (not rebased, so don't use `linux-next` for example).
-    - if changes were required, use `BACKPORT: FROMGIT:`
-    - Example:
-        - if the commit message in the maintainer tree is
-```
-        important patch from upstream
-
-        This is the detailed description of the important patch
-
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-```
-        - then Joe Smith would upload the patch for the common kernel as
-```
-        FROMGIT: important patch from upstream
-
-        This is the detailed description of the important patch
-
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-
-        Bug: 135791357
-        (cherry picked from commit 878a2fd9de10b03d11d2f622250285c7e63deace
-         https://git.kernel.org/pub/scm/linux/kernel/git/foo/bar.git test-branch)
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
-```
-
-
-- If the patch has been submitted to LKML, but not accepted into any maintainer tree
-    - tag the patch subject with `FROMLIST:`
-    - add a `Link:` tag with a link to the submittal on lore.kernel.org
-    - if changes were required, use `BACKPORT: FROMLIST:`
-    - Example:
-```
-        FROMLIST: important patch from upstream
-
-        This is the detailed description of the important patch
-
-        Signed-off-by: Fred Jones <fred.jones@foo.org>
-
-        Bug: 135791357
-        Link: https://lore.kernel.org/lkml/20190619171517.GA17557@someone.com/
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
-```
-
-## Requirements for Android-specific patches: `ANDROID:`
-
-- If the patch is fixing a bug to Android-specific code
-    - tag the patch subject with `ANDROID:`
-    - add a `Fixes:` tag that cites the patch with the bug
-    - Example:
-```
-        ANDROID: fix android-specific bug in foobar.c
-
-        This is the detailed description of the important fix
-
-        Fixes: 1234abcd2468 ("foobar: add cool feature")
-        Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        Signed-off-by: Joe Smith <joe.smith@foo.org>
-```
-
-- If the patch is a new feature
-    - tag the patch subject with `ANDROID:`
-    - add a `Bug:` tag with the Android bug (required for android-specific features)
-
-# Vibrator driver for HHG device
-## How to merge the driver into kernel source tree
-
- 1. Copy \${this_project}/drivers/hid/hid-aksys.c into \${your_kernel_root}/drivers/hid/
-
- 2. Compare and merge \${this_project}/drivers/hid/hid-ids.h into \${your_kernel_root}/drivers/hid/hid-ids.h :
- Add the following code before the last line of this file
-
-    ```c
-		#define USB_VENDER_ID_QUALCOMM  0x0a12
-		#define USB_VENDER_ID_TEMP_HHG_AKSY 0x1234
-		#define USB_PRODUCT_ID_AKSYS_HHG  0x1000
-    ```
-
- 3. Merge \${this_project}/drivers/hid/Kconfig into \${your_kernel_root}/drivers/hid/Kconfig :
-Add the following code before the last line of this file
-
-		config HID_AKSYS_QRD
-    		tristate "AKSys gamepad USB adapter support"
-    		depends on HID
-    		---help---
-    		Support for AKSys gamepad USB adapter
-
-    	config AKSYS_QRD_FF
-    		bool "AKSys gamepad USB adapter force feedback support"
-    		depends on HID_AKSYS_QRD
-    		select INPUT_FF_MEMLESS
-    		---help---
-    		Say Y here if you have a AKSys gamepad USB adapter and want to
-    		enable force feedback support for it.
-    		
- 4. Merge \${this_project}/drivers/hid/Makefile into \${your_kernel_root}/drivers/hid/Makefile :
- Add the following code at the end of this file
-
-		obj-$(CONFIG_HID_AKSYS_QRD)	+= hid-aksys.o
-		
- 5. Modify your kernel's default build configuration file. Add the following two lines:
-
-        CONFIG_HID_AKSYS_QRD=m
-        CONFIG_AKSYS_QRD_FF=y
+感谢 LineageOS、Linux stable、ReSukiSU 及所有原始贡献者。本项目与 Xiaomi、LineageOS 或 ReSukiSU 项目无隶属关系。
