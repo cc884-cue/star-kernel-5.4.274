@@ -12,10 +12,20 @@
 #include <linux/fs.h>
 
 #include <linux/proc_fs.h>
+#if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
+#include <linux/susfs_def.h>
+#endif
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+#include <linux/susfs.h>
+#endif
 
 #include "../mount.h"
 #include "internal.h"
 #include "fd.h"
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt);
+#endif
 
 static int seq_show(struct seq_file *m, void *v)
 {
@@ -23,6 +33,15 @@ static int seq_show(struct seq_file *m, void *v)
 	int f_flags = 0, ret = -ENOENT;
 	struct file *file = NULL;
 	struct task_struct *task;
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	struct mount *mnt;
+	int mnt_id;
+#endif
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	int redirected_mnt_id;
+	unsigned long redirected_ino;
+	bool have_redirected_info = false;
+#endif
 
 	task = get_proc_task(m->private);
 	if (!task)
@@ -53,10 +72,37 @@ static int seq_show(struct seq_file *m, void *v)
 	if (ret)
 		return ret;
 
-	seq_printf(m, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\n",
-		   (long long)file->f_pos, f_flags,
-		   real_mount(file->f_path.mnt)->mnt_id);
-
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (SUSFS_IS_INODE_OPEN_REDIRECT(file_inode(file)) &&
+	    !susfs_open_redirect_spoof_seq_show(file_inode(file),
+						&redirected_mnt_id,
+						&redirected_ino))
+		have_redirected_info = true;
+#endif
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (have_redirected_info) {
+		seq_printf(m, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\nino:\t%lu\n",
+			   (long long)file->f_pos, f_flags,
+			   redirected_mnt_id, redirected_ino);
+	} else
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	{
+		mnt = real_mount(file->f_path.mnt);
+		mnt_id = mnt->mnt_id;
+		if ((mnt->mnt.mnt_flags & VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT) &&
+		    likely(susfs_is_current_proc_umounted()))
+			mnt_id = susfs_get_non_sus_mnt_id_from_mnt(mnt);
+		seq_printf(m, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\n",
+			   (long long)file->f_pos, f_flags, mnt_id);
+	}
+#else
+	{
+		seq_printf(m, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\n",
+			   (long long)file->f_pos, f_flags,
+			   real_mount(file->f_path.mnt)->mnt_id);
+	}
+#endif
 	show_fd_locks(m, file, files);
 	if (seq_has_overflowed(m))
 		goto out;

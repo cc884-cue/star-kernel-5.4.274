@@ -9,6 +9,16 @@
 #include <linux/security.h>
 #include <linux/uaccess.h>
 #include <linux/compat.h>
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/susfs_def.h>
+#include "mount.h"
+extern int susfs_get_non_sus_mount_path(const struct path *orig_path,
+					struct path *non_sus_path);
+#endif
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+#include <linux/susfs_def.h>
+#include <linux/susfs.h>
+#endif
 #include "internal.h"
 
 static int flags_by_mnt(int mnt_flags)
@@ -83,12 +93,38 @@ EXPORT_SYMBOL(vfs_get_fsid);
 
 int vfs_statfs(const struct path *path, struct kstatfs *buf)
 {
-	int error;
-
-	error = statfs_by_dentry(path->dentry, buf);
-	if (!error)
-		buf->f_flags = calculate_f_flags(path->mnt);
-	return error;
+int error;
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+struct inode *source_inode = d_backing_inode(path->dentry);
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+struct path non_sus_path;
+if (path->mnt && susfs_is_current_proc_umounted() &&
+    (real_mount(path->mnt)->mnt.mnt_flags &
+     VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT) &&
+    !susfs_get_non_sus_mount_path(path, &non_sus_path)) {
+error = statfs_by_dentry(non_sus_path.dentry, buf);
+if (!error)
+buf->f_flags = calculate_f_flags(non_sus_path.mnt);
+path_put(&non_sus_path);
+if (error)
+return error;
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+if (SUSFS_IS_INODE_OPEN_REDIRECT(source_inode))
+susfs_open_redirect_spoof_vfs_statfs(source_inode, buf);
+#endif
+return 0;
+}
+#endif
+error = statfs_by_dentry(path->dentry, buf);
+if (!error) {
+buf->f_flags = calculate_f_flags(path->mnt);
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+if (SUSFS_IS_INODE_OPEN_REDIRECT(source_inode))
+susfs_open_redirect_spoof_vfs_statfs(source_inode, buf);
+#endif
+}
+return error;
 }
 EXPORT_SYMBOL(vfs_statfs);
 

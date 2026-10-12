@@ -13,10 +13,17 @@
 #include <linux/seq_file.h>
 #include <linux/proc_fs.h>
 #include <linux/exportfs.h>
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/susfs_def.h>
+#endif
 
 #include "inotify/inotify.h"
 #include "fdinfo.h"
 #include "fsnotify.h"
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt);
+#endif
 
 #if defined(CONFIG_PROC_FS)
 
@@ -120,12 +127,22 @@ static void fanotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
 		show_mark_fhandle(m, inode);
 		seq_putc(m, '\n');
 		iput(inode);
-	} else if (mark->connector->type == FSNOTIFY_OBJ_TYPE_VFSMOUNT) {
-		struct mount *mnt = fsnotify_conn_mount(mark->connector);
+		} else if (mark->connector->type == FSNOTIFY_OBJ_TYPE_VFSMOUNT) {
+			struct mount *mnt = fsnotify_conn_mount(mark->connector);
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+			int mnt_id = mnt->mnt_id;
 
-		seq_printf(m, "fanotify mnt_id:%x mflags:%x mask:%x ignored_mask:%x\n",
-			   mnt->mnt_id, mflags, mark->mask, mark->ignored_mask);
-	} else if (mark->connector->type == FSNOTIFY_OBJ_TYPE_SB) {
+			if ((mnt->mnt.mnt_flags & VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT) &&
+			    likely(susfs_is_current_proc_umounted()))
+				mnt_id = susfs_get_non_sus_mnt_id_from_mnt(mnt);
+			seq_printf(m, "fanotify mnt_id:%x mflags:%x mask:%x ignored_mask:%x\n",
+				   mnt_id, mflags, mark->mask, mark->ignored_mask);
+#else
+
+			seq_printf(m, "fanotify mnt_id:%x mflags:%x mask:%x ignored_mask:%x\n",
+				   mnt->mnt_id, mflags, mark->mask, mark->ignored_mask);
+#endif
+		} else if (mark->connector->type == FSNOTIFY_OBJ_TYPE_SB) {
 		struct super_block *sb = fsnotify_conn_sb(mark->connector);
 
 		seq_printf(m, "fanotify sdev:%x mflags:%x mask:%x ignored_mask:%x\n",

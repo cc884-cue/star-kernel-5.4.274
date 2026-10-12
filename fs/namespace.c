@@ -30,9 +30,21 @@
 #include <uapi/linux/mount.h>
 #include <linux/fs_context.h>
 #include <linux/shmem_fs.h>
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/jump_label.h>
+#include <linux/susfs_def.h>
+#endif
 
 #include "pnode.h"
 #include "internal.h"
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+
+/* Marks mounts whose ID was allocated from the SUSFS-reserved IDA range. */
+#define MNT_SUSFS_SUS_ID VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT
+#endif
 
 /* Maximum number of mounts in a mount namespace */
 unsigned int sysctl_mount_max __read_mostly = 100000;
@@ -104,7 +116,20 @@ static inline struct hlist_head *mp_hash(struct dentry *dentry)
 
 static int mnt_alloc_id(struct mount *mnt)
 {
-	int res = ida_alloc(&mnt_id_ida, GFP_KERNEL);
+	int res;
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted) &&
+	    susfs_is_current_ksu_domain()) {
+		res = ida_alloc_min(&mnt_id_ida, DEFAULT_KSU_MNT_ID, GFP_KERNEL);
+		if (res < 0)
+			return res;
+		mnt->mnt.mnt_flags |= MNT_SUSFS_SUS_ID;
+	} else
+#endif
+	{
+		res = ida_alloc(&mnt_id_ida, GFP_KERNEL);
+	}
 
 	if (res < 0)
 		return res;
@@ -952,11 +977,11 @@ struct vfsmount *vfs_create_mount(struct fs_context *fc)
 			free_vfsmnt(mnt);
 			return ERR_PTR(-ENOMEM);
 		}
-		if (sb->s_op->update_mnt_data)
-			sb->s_op->update_mnt_data(mnt->mnt.data, fc);
-	}
-	if (fc->sb_flags & SB_KERNMOUNT)
-		mnt->mnt.mnt_flags = MNT_INTERNAL;
+			if (sb->s_op->update_mnt_data)
+				sb->s_op->update_mnt_data(mnt->mnt.data, fc);
+		}
+		if (fc->sb_flags & SB_KERNMOUNT)
+			mnt->mnt.mnt_flags |= MNT_INTERNAL;
 
 	atomic_inc(&fc->root->d_sb->s_active);
 	mnt->mnt.mnt_sb		= fc->root->d_sb;
@@ -1028,15 +1053,22 @@ vfs_submount(const struct dentry *mountpoint, struct file_system_type *type,
 EXPORT_SYMBOL_GPL(vfs_submount);
 
 static struct mount *clone_mnt(struct mount *old, struct dentry *root,
-					int flag)
+						int flag)
 {
 	struct super_block *sb = old->mnt.mnt_sb;
 	struct mount *mnt;
 	int err;
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	bool has_sus_id;
+#endif
 
 	mnt = alloc_vfsmnt(old->mnt_devname);
 	if (!mnt)
 		return ERR_PTR(-ENOMEM);
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	/* The clone owns a fresh IDA ID; do not inherit the source's ID tag. */
+	has_sus_id = !!(mnt->mnt.mnt_flags & MNT_SUSFS_SUS_ID);
+#endif
 
 	if (sb->s_op->clone_mnt_data) {
 		mnt->mnt.data = sb->s_op->clone_mnt_data(old->mnt.data);
@@ -1059,6 +1091,11 @@ static struct mount *clone_mnt(struct mount *old, struct dentry *root,
 
 	mnt->mnt.mnt_flags = old->mnt.mnt_flags;
 	mnt->mnt.mnt_flags &= ~(MNT_WRITE_HOLD|MNT_MARKED|MNT_INTERNAL);
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	mnt->mnt.mnt_flags &= ~MNT_SUSFS_SUS_ID;
+	if (has_sus_id)
+		mnt->mnt.mnt_flags |= MNT_SUSFS_SUS_ID;
+#endif
 
 	atomic_inc(&sb->s_active);
 	mnt->mnt.mnt_sb = sb;
@@ -4067,3 +4104,59 @@ const struct proc_ns_operations mntns_operations = {
 	.install	= mntns_install,
 	.owner		= mntns_owner,
 };
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+/*
+ * Mount IDs are unique in mnt_id_ida, including the reserved high range.
+ * Walk to the first non-SUS ancestor while holding the mount hash lock so
+ * mnt_parent cannot change under us.  A namespace root has no such ancestor.
+ */
+int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt)
+{
+	struct mount *mnt = orig_mnt;
+	int mnt_id;
+
+	if (!mnt)
+		return 0;
+
+	lock_mount_hash();
+	while ((mnt->mnt.mnt_flags & MNT_SUSFS_SUS_ID) &&
+	       mnt->mnt_parent && mnt != mnt->mnt_parent)
+		mnt = mnt->mnt_parent;
+	mnt_id = mnt->mnt_id;
+	unlock_mount_hash();
+	return mnt_id;
+}
+
+/*
+ * Return a referenced path at the first non-SUS mount's root.  On success,
+ * the caller owns both references and must use path_put(); on failure the
+ * output is untouched.  The source path pins the starting mount throughout.
+ */
+int susfs_get_non_sus_mount_path(const struct path *orig_path,
+				 struct path *non_sus_path)
+{
+	struct mount *mnt;
+	struct dentry *root;
+
+	if (!orig_path || !orig_path->mnt || !non_sus_path)
+		return -EINVAL;
+
+	lock_mount_hash();
+	mnt = real_mount(orig_path->mnt);
+	while ((mnt->mnt.mnt_flags & MNT_SUSFS_SUS_ID) &&
+	       mnt->mnt_parent && mnt != mnt->mnt_parent)
+		mnt = mnt->mnt_parent;
+	root = mnt->mnt.mnt_root;
+	if (!root) {
+		unlock_mount_hash();
+		return -ENOENT;
+	}
+	mntget(&mnt->mnt);
+	dget(root);
+	non_sus_path->mnt = &mnt->mnt;
+	non_sus_path->dentry = root;
+	unlock_mount_hash();
+	return 0;
+}
+#endif /* CONFIG_KSU_SUSFS_SUS_MOUNT */

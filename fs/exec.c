@@ -65,6 +65,9 @@
 #include <linux/vmalloc.h>
 
 #include <linux/uaccess.h>
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs_def.h>
+#endif
 #include <asm/mmu_context.h>
 #include <asm/tlb.h>
 
@@ -1902,8 +1905,9 @@ static int do_execveat_common(int fd, struct filename *filename,
 			      struct user_arg_ptr envp,
 			      int flags)
 {
-	#ifdef CONFIG_KSU_MANUAL_HOOK
+	#if defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_SUSFS)
 	int retval;
+	bool ksu_execveat_hooked = false;
 	extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 				       void *argv, void *envp, int *flags);
 	extern int ksu_handle_post_execveat(int *fd,
@@ -1911,9 +1915,31 @@ static int do_execveat_common(int fd, struct filename *filename,
 					     void *argv, void *envp,
 					     int *flags, int *retval);
 
+	#ifdef CONFIG_KSU_SUSFS
+	extern struct static_key_true ksu_su_compat_enabled;
+	extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+	extern int ksu_handle_execveat_sucompat(int *fd,
+						struct filename **filename_ptr,
+						void *argv, void *envp, int *flags);
+
+	if (!susfs_is_current_proc_umounted() &&
+	    static_branch_likely(&ksu_su_compat_enabled)) {
+		if (static_branch_unlikely(
+				&susfs_is_sdcard_android_data_not_decrypted))
+			ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+		else
+			ksu_handle_execveat_sucompat(&fd, &filename, &argv,
+						     &envp, &flags);
+		ksu_execveat_hooked = true;
+	}
+	#else
 	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+	ksu_execveat_hooked = true;
+	#endif
 	retval = __do_execve_file(fd, filename, argv, envp, flags, NULL);
-	ksu_handle_post_execveat(&fd, &filename, &argv, &envp, &flags, &retval);
+	if (ksu_execveat_hooked)
+		ksu_handle_post_execveat(&fd, &filename, &argv, &envp, &flags,
+					 &retval);
 	return retval;
 	#else
 	return __do_execve_file(fd, filename, argv, envp, flags, NULL);

@@ -86,6 +86,12 @@
 #include <linux/elf.h>
 #include <linux/pid_namespace.h>
 #include <linux/user_namespace.h>
+#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
+#include <linux/susfs_def.h>
+#endif
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+#include <linux/susfs.h>
+#endif
 #include <linux/fs_struct.h>
 #include <linux/slab.h>
 #include <linux/sched/autogroup.h>
@@ -831,6 +837,9 @@ static ssize_t mem_rw(struct file *file, char __user *buf,
 	ssize_t copied;
 	char *page;
 	unsigned int flags;
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+	struct vm_area_struct *vma;
+#endif
 
 	if (!mm)
 		return 0;
@@ -847,6 +856,38 @@ static ssize_t mem_rw(struct file *file, char __user *buf,
 
 	while (count > 0) {
 		size_t this_len = min_t(size_t, count, PAGE_SIZE);
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		bool blocked = false;
+		unsigned long chunk_end = addr + this_len;
+		int lock_ret;
+
+		if (chunk_end < addr)
+			chunk_end = ULONG_MAX;
+		lock_ret = down_read_killable(&mm->mmap_sem);
+		if (lock_ret) {
+			if (!copied)
+				copied = lock_ret;
+			break;
+		}
+		for (vma = find_vma(mm, addr);
+		     vma && vma->vm_start < chunk_end; vma = vma->vm_next) {
+			if (!vma->vm_file ||
+			    !SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+				continue;
+			if (vma->vm_start <= addr) {
+				blocked = true;
+				break;
+			}
+			this_len = min_t(size_t, this_len, vma->vm_start - addr);
+			break;
+		}
+		up_read(&mm->mmap_sem);
+		if (blocked) {
+			if (!copied)
+				copied = write ? -EFAULT : -EIO;
+			break;
+		}
+#endif
 
 		if (write && copy_from_user(page, buf, this_len)) {
 			copied = -EFAULT;
@@ -1736,6 +1777,18 @@ static int do_proc_readlink(struct path *path, char __user *buffer, int buflen)
 	if (!tmp)
 		return -ENOMEM;
 
+	#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (SUSFS_IS_INODE_OPEN_REDIRECT(d_backing_inode(path->dentry)) &&
+	    !susfs_open_redirect_spoof_do_proc_readlink(
+		    d_backing_inode(path->dentry), tmp, PAGE_SIZE)) {
+		len = strnlen(tmp, PAGE_SIZE);
+		if (len > buflen)
+			len = buflen;
+		if (copy_to_user(buffer, tmp, len))
+			len = -EFAULT;
+		goto out;
+	}
+	#endif
 	pathname = d_path(path, tmp, PAGE_SIZE);
 	len = PTR_ERR(pathname);
 	if (IS_ERR(pathname))
@@ -2059,6 +2112,7 @@ static int map_files_d_revalidate(struct dentry *dentry, unsigned int flags)
 	struct mm_struct *mm = NULL;
 	struct task_struct *task;
 	struct inode *inode;
+	struct vm_area_struct *vma;
 	int status = 0;
 
 	if (flags & LOOKUP_RCU)
@@ -2076,8 +2130,13 @@ static int map_files_d_revalidate(struct dentry *dentry, unsigned int flags)
 	if (!dname_to_vma_addr(dentry, &vm_start, &vm_end)) {
 		status = down_read_killable(&mm->mmap_sem);
 		if (!status) {
-			exact_vma_exists = !!find_exact_vma(mm, vm_start,
-							    vm_end);
+			vma = find_exact_vma(mm, vm_start, vm_end);
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+			if (vma && vma->vm_file &&
+			    SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+				vma = NULL;
+#endif
+			exact_vma_exists = !!vma;
 			up_read(&mm->mmap_sem);
 		}
 	}
@@ -2132,9 +2191,15 @@ static int map_files_get_link(struct dentry *dentry, struct path *path)
 	rc = -ENOENT;
 	vma = find_exact_vma(mm, vm_start, vm_end);
 	if (vma && vma->vm_file) {
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		if (!SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))) {
+#endif
 		*path = vma->vm_file->f_path;
 		path_get(path);
 		rc = 0;
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		}
+#endif
 	}
 	up_read(&mm->mmap_sem);
 
@@ -2234,9 +2299,14 @@ static struct dentry *proc_map_files_lookup(struct inode *dir,
 	if (!vma)
 		goto out_no_vma;
 
-	if (vma->vm_file)
+	if (vma->vm_file) {
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		if (SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+			goto out_no_vma;
+#endif
 		result = proc_map_files_instantiate(dentry, task,
 				(void *)(unsigned long)vma->vm_file->f_mode);
+	}
 
 out_no_vma:
 	up_read(&mm->mmap_sem);
@@ -2305,6 +2375,10 @@ proc_map_files_readdir(struct file *file, struct dir_context *ctx)
 	for (vma = mm->mmap, pos = 2; vma; vma = vma->vm_next) {
 		if (!vma->vm_file)
 			continue;
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		if (SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+			continue;
+#endif
 		if (++pos <= ctx->pos)
 			continue;
 

@@ -317,7 +317,13 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 	char buffer[256];
 	int ret = 0;
 
-	#ifdef CONFIG_KSU_MANUAL_HOOK
+	#ifdef CONFIG_KSU_SUSFS
+	extern int ksu_handle_sys_reboot(int magic1, int magic2,
+					 unsigned int cmd, void __user **arg);
+	ret = ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+	if (!ret)
+		return 0;
+	#elif defined(CONFIG_KSU_MANUAL_HOOK)
 	extern int ksu_handle_sys_reboot(int magic1, int magic2,
 					 unsigned int cmd, void __user **arg);
 	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
