@@ -24,4 +24,6 @@ SUSFS 上游项目将相关实现标注为 **GPL-3.0-or-later**；此内核基�
 
 发布附件包括 `Image.gz`、`lahaina.dtb`、`star-sm8350-overlay.dtbo`、模块和构建元数据。**这些文件不是可直接刷入的 `boot.img`；不要将 `Image.gz` 或 DTBO 直接写入设备分区。** 实际打包必须匹配设备当前固件的 boot header、vendor ramdisk、DTB/DTBO 组合和 vbmeta 设置。刷写前应核对设备固件布局、备份原分区并准备可靠恢复方式。源码树编译出来的 DTB/DTBO 也须先与设备当前固件核对。
 
+测试范围、主机侧校验、设备测试准入条件及恢复注意事项见 [`SUSFS-EXPERIMENT-TESTING.md`](SUSFS-EXPERIMENT-TESTING.md)。当前发布**未经实体机启动测试**；请勿将现有构建附件直接启动或刷写。
+
 实验构建脚本及配置位于仓库中。构建环境与基本步骤见 [`BUILDING.md`](BUILDING.md)。请保留各文件原有版权及许可证声明；Linux 内核主许可证见 [`COPYING`](COPYING)，ReSukiSU 许可证见 `KernelSU/LICENSE`。本项目与 Xiaomi、LineageOS 或 ReSukiSU 项目无隶属关系。
